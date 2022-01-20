@@ -17,12 +17,19 @@
  * limitations under the License.
  */
 
-import { DocumentNode, graphql, parse, print, SelectionSetNode } from "graphql";
+import { DocumentNode, graphql, GraphQLObjectType, parse, print, SelectionSetNode } from "graphql";
 import pluralize from "pluralize";
+import { Driver, isInt } from "neo4j-driver";
 import { Neo4jGraphQL } from "@neo4j/graphql";
+import { buildResolveInfo } from "graphql/execution/execute";
+import { parseSelectionSet, buildOperationNodeForField } from "@graphql-tools/utils";
 import { GraphQLOptionsArg, GraphQLWhereArg, DeleteInfo } from "../types";
 import { upperFirst } from "../utils/upper-first";
 import { lowerFirst } from "../utils/lower-first";
+import getNeo4jResolveTree from "../../../graphql/src/utils/get-neo4j-resolve-tree";
+import execute from "../../../graphql/src/utils/execute";
+import createProjectionAndParams from "../../../graphql/src/translate/create-projection-and-params";
+import createConnectionAndParams from "../../../graphql/src/translate/connection/create-connection-and-params";
 
 export interface ModelConstructor {
     name: string;
@@ -151,6 +158,144 @@ class Model {
         }
 
         return (result.data as any)[mutationName] as T;
+    }
+
+    async cypher<T extends any[]>({
+        query,
+        params: queryParams = {},
+        selectionSet,
+        variables = {},
+        context,
+    }: {
+        query: string;
+        params?: Record<string, any>;
+        selectionSet: string | DocumentNode | SelectionSetNode;
+        variables?: Record<string, any>;
+        context: {
+            [key: string]: any;
+            driver: Driver;
+        };
+        rootValue?: any;
+    }): Promise<T> {
+        // Hack Resolve Info
+
+        const { selections } = parseSelectionSet(`
+            {
+                ${this.namePluralized}
+                ${selectionSet}
+            }
+        `);
+
+        const resolveInfo = buildResolveInfo(
+            // @ts-ignore
+            {
+                schema: this.neoSchema.schema,
+                operation: buildOperationNodeForField({
+                    schema: this.neoSchema.schema,
+                    kind: "query",
+                    field: this.namePluralized,
+                }),
+                variableValues: variables,
+            },
+            {
+                name: this.namePluralized,
+                type: this.neoSchema.schema.getType(this.name) as GraphQLObjectType,
+            },
+            selections,
+            this.neoSchema.schema.getType("Query") as GraphQLObjectType,
+            { key: this.namePluralized, typename: this.name }
+        );
+
+        const resolveTree = getNeo4jResolveTree(resolveInfo);
+
+        // APOC
+
+        const apocParams = Object.entries(queryParams).reduce(
+            (r: { strs: string[]; params: any }, entry) => ({
+                strs: [...r.strs, `${entry[0]}: $${entry[0]}`],
+                params: { ...r.params, [entry[0]]: entry[1] },
+            }),
+            { strs: [], params: {} }
+        );
+
+        const apocParamsStr = `{${apocParams.strs.length ? `${apocParams.strs.join(", ")}` : ""}}`;
+
+        const apocStr = `
+            WITH apoc.cypher.runFirstColumn("${query}", ${apocParamsStr}, true) as x
+            UNWIND x as this
+            WITH this
+        `;
+
+        // Projection
+
+        const node = this.neoSchema.nodes.find((x) => x.name === this.name) as any;
+
+        const [projectionStr, p, meta] = createProjectionAndParams({
+            resolveTree,
+            node,
+            context: { ...context, neoSchema: this.neoSchema, resolveTree },
+            varName: `this`,
+        });
+
+        let projParams = { ...queryParams, ...p };
+
+        const connectionProjectionStrs: string[] = [];
+        if (meta?.connectionFields?.length) {
+            meta.connectionFields.forEach((connectionResolveTree) => {
+                const connectionField = node.connectionFields.find(
+                    (x) => x.fieldName === connectionResolveTree.name
+                ) as any;
+
+                const nestedConnection = createConnectionAndParams({
+                    resolveTree: connectionResolveTree,
+                    field: connectionField,
+                    context: { ...context, neoSchema: this.neoSchema, resolveTree },
+                    nodeVariable: "this",
+                });
+                const [nestedStr, nestedP] = nestedConnection;
+                connectionProjectionStrs.push(nestedStr);
+                projParams = { ...projParams, ...nestedP };
+            });
+        }
+
+        // Execute
+
+        const cypher = [apocStr, connectionProjectionStrs.join("\n"), `RETURN this ${projectionStr} AS this`].join(
+            "\n"
+        );
+
+        const params = { ...queryParams, ...projParams };
+
+        const executeResult = await execute({
+            cypher,
+            params,
+            defaultAccessMode: "WRITE",
+            context: { ...context, neoSchema: this.neoSchema, resolveTree },
+        });
+
+        const values = executeResult.result.records.map((record) => {
+            const value = record.get(0);
+
+            if (["number", "string", "boolean"].includes(typeof value)) {
+                return value;
+            }
+
+            if (!value) {
+                return undefined;
+            }
+
+            if (isInt(value)) {
+                return Number(value);
+            }
+
+            if (value.identity && value.labels && value.properties) {
+                return value.properties;
+            }
+
+            return value;
+        });
+
+        return values as T;
     }
 
     async update<T = any>({
