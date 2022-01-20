@@ -153,6 +153,45 @@ class Model {
         return (result.data as any)[mutationName] as T;
     }
 
+    async cypher<T extends any[]>({
+        statement,
+        selectionSet,
+        context = {},
+    }: {
+        statement: string;
+        params?: Record<string, any>;
+        selectionSet?: string | DocumentNode | SelectionSetNode;
+        context?: any;
+        rootValue?: any;
+    }): Promise<T> {
+        const cypherQuery = `_ogm${this.name}Cypher`;
+        const cypherStatement = statement.replace(/[\n\r]/g, " ").replace(/"/g, "'");
+
+        this.neoSchema.mergeSchema({
+            typeDefs: `
+                type Query {
+                    ${cypherQuery}: [${this.name}!]! @cypher(statement: "${cypherStatement}")
+                }
+            `,
+        });
+
+        const selection = printSelectionSet(selectionSet || this.selectionSet);
+
+        const query = `
+            query {
+                ${cypherQuery} ${selection}
+            }
+        `;
+
+        const result = await graphql(this.neoSchema.schema, query, null, context, {});
+
+        if (result.errors?.length) {
+            throw new Error(result.errors[0].message);
+        }
+
+        return (result.data as any)[cypherQuery] as T;
+    }
+
     async update<T = any>({
         where,
         update,
