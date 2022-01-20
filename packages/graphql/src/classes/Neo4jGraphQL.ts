@@ -19,7 +19,7 @@
 
 import { Driver } from "neo4j-driver";
 import { DocumentNode, GraphQLSchema, parse, printSchema } from "graphql";
-import { IExecutableSchemaDefinition, makeExecutableSchema } from "@graphql-tools/schema";
+import { IExecutableSchemaDefinition, makeExecutableSchema, mergeSchemas } from "@graphql-tools/schema";
 import { composeResolvers } from "@graphql-tools/resolvers-composition";
 import { forEachField } from "@graphql-tools/utils";
 import { mergeResolvers } from "@graphql-tools/merge";
@@ -61,6 +61,7 @@ class Neo4jGraphQL {
     public document: DocumentNode;
     private driver?: Driver;
     public config?: Neo4jGraphQLConfig;
+    public schemaDefinition: IExecutableSchemaDefinition;
 
     constructor(input: Neo4jGraphQLConstructor) {
         const { config = {}, driver, ...schemaDefinition } = input;
@@ -73,6 +74,7 @@ class Neo4jGraphQL {
         this.config = config;
         this.nodes = nodes;
         this.relationships = relationships;
+        this.schemaDefinition = schemaDefinition;
 
         const resolversComposition = {
             "Query.*": [wrapResolver({ driver, config, neoSchema: this })],
@@ -125,6 +127,49 @@ class Neo4jGraphQL {
         }
 
         await assertIndexesAndConstraints({ driver, driverConfig, nodes: this.nodes, options: input.options });
+    }
+
+    mergeSchema(input: IExecutableSchemaDefinition) {
+        const { nodes, relationships, typeDefs, resolvers } = makeAugmentedSchema(
+            [this.schemaDefinition.typeDefs, input.typeDefs],
+            {
+                enableRegex: this.config?.enableRegex,
+                skipValidateTypeDefs: true,
+            }
+        );
+
+        this.nodes = nodes;
+        this.relationships = relationships;
+
+        const resolversComposition = {
+            "Query.*": [wrapResolver({ driver: this.driver, config: this.config ?? {}, neoSchema: this })],
+            "Mutation.*": [wrapResolver({ driver: this.driver, config: this.config ?? {}, neoSchema: this })],
+        };
+
+        const allResolvers = mergeResolvers([resolvers, input.resolvers]);
+
+        const composedResolvers = composeResolvers(allResolvers, resolversComposition);
+
+        const schema = makeExecutableSchema({
+            ...input,
+            typeDefs,
+            resolvers: composedResolvers,
+        });
+
+        // Assign a default field resolver to account for aliasing of fields
+        forEachField(schema, (field) => {
+            if (!field.resolve) {
+                // eslint-disable-next-line no-param-reassign
+                field.resolve = defaultFieldResolver;
+            }
+        });
+
+        const mergedSchema = mergeSchemas({
+            schemas: [this.schema, schema],
+        });
+
+        this.schema = mergedSchema;
+        this.document = parse(printSchema(mergedSchema));
     }
 }
 
