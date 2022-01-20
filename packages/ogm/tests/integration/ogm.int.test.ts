@@ -19,6 +19,7 @@
 
 import { Driver } from "neo4j-driver";
 import { generate } from "randomstring";
+import faker from "faker";
 import gql from "graphql-tag";
 import neo4j from "./neo4j";
 import { OGM, Model } from "../../src";
@@ -643,6 +644,126 @@ describe("OGM", () => {
                 });
 
                 expect(movies).toEqual([{ id: movieId, actors: [{ id: actorId }] }]);
+            } finally {
+                await session.close();
+            }
+        });
+
+        test.only("cypher", async () => {
+            const session = driver.session();
+
+            const typeDefs = `
+                type Actor {
+                    id: ID!
+                    name: String!
+                    movies: [Movie!]! @relationship(type: "ACTED_IN", direction: OUT)
+                }
+
+                type Movie {
+                    id: ID!
+                    runtime: Int!
+                    actors: [Actor!]! @relationship(type: "ACTED_IN", direction: IN)
+                }
+            `;
+
+            const ogm = new OGM({ typeDefs, driver });
+
+            const movie = {
+                id: generate(),
+                runtime: 233,
+            };
+
+            const actors = [
+                {
+                    id: generate(),
+                    name: `${faker.name.firstName()} ${faker.name.lastName()}`,
+                },
+                {
+                    id: generate(),
+                    name: `${faker.name.firstName()} ${faker.name.lastName()}`,
+                },
+                {
+                    id: generate(),
+                    name: `${faker.name.firstName()} ${faker.name.lastName()}`,
+                },
+            ];
+
+            try {
+                await session.run(
+                    `
+                    CREATE (movie:Movie) SET movie = $movie
+                    CREATE (actor1:Actor) SET actor1 = $actors[0]
+                    CREATE (actor2:Actor) SET actor2 = $actors[1]
+                    CREATE (actor3:Actor) SET actor3 = $actors[2]
+                    MERGE (actor1)-[:ACTED_IN]->(movie)
+                    MERGE (actor2)-[:ACTED_IN]->(movie)
+                    MERGE (actor3)-[:ACTED_IN]->(movie)
+                `,
+                    {
+                        movie,
+                        actors,
+                    }
+                );
+
+                const Movie = ogm.model("Movie");
+
+                const ogmMovies = await Movie.cypher({
+                    query: `
+                        MATCH (m:Movie)
+                        WHERE m.id = $movieId
+                        RETURN m
+                    `,
+                    params: {
+                        movieId: movie.id,
+                    },
+                    selectionSet: `
+                        {
+                            id
+                            runtime
+                            actors {
+                                id
+                                name
+                            }
+                            actorsConnection(first: $first, where: { node: { id_IN: [$actor1Id, $actor2Id] } }) {
+                                totalCount
+                                edges {
+                                    node {
+                                        id
+                                        name
+                                        movies {
+                                            id
+                                            runtime
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    `,
+                    variables: {
+                        first: 2,
+                        actor1Id: actors[0].id,
+                        actor2Id: actors[1].id,
+                    },
+                    context: {
+                        driver,
+                    },
+                });
+
+                expect(ogmMovies).toHaveLength(1);
+
+                expect(ogmMovies[0].id).toBe(movie.id);
+                expect(ogmMovies[0].runtime).toBe(movie.runtime);
+
+                expect(ogmMovies[0].actors).toHaveLength(3);
+                expect(ogmMovies[0].actors).toEqual(expect.arrayContaining(actors));
+
+                expect(ogmMovies[0].actorsConnection.edges).toHaveLength(2);
+                expect(ogmMovies[0].actorsConnection.edges).toEqual(
+                    expect.arrayContaining([
+                        { node: { ...actors[0], movies: [movie] } },
+                        { node: { ...actors[1], movies: [movie] } },
+                    ])
+                );
             } finally {
                 await session.close();
             }
