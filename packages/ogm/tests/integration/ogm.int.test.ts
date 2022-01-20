@@ -23,6 +23,7 @@ import gql from "graphql-tag";
 import neo4j from "./neo4j";
 import { OGM, Model } from "../../src";
 
+const testLabel = generate({ charset: "alphabetic" });
 describe("OGM", () => {
     let driver: Driver;
 
@@ -779,6 +780,122 @@ describe("OGM", () => {
 
                 expect(result).toEqual({ nodesDeleted: 2, relationshipsDeleted: 1 });
             } finally {
+                await session.close();
+            }
+        });
+    });
+
+    describe("cypher", () => {
+        test("simple", async () => {
+            const session = driver.session();
+
+            const typeDefs = `
+                type Actor {
+                    id: ID!
+                    name: String!
+                    movies: [Movie!]! @relationship(type: "ACTED_IN", direction: OUT)
+                }
+                type Movie {
+                    id: ID!
+                    title: String!
+                    runtime: Int!
+                    actors: [Actor!]! @relationship(type: "ACTED_IN", direction: IN)
+                }
+            `;
+
+            const ogm = new OGM({ typeDefs, driver });
+
+            const movie = {
+                id: generate(),
+                title: "The Matrix",
+                runtime: 233,
+            };
+
+            const actors = [
+                {
+                    id: generate(),
+                    name: "Keanu Reeves",
+                },
+                {
+                    id: generate(),
+                    name: "Carrie-Ann Moss",
+                },
+                {
+                    id: generate(),
+                    name: "Laurence Fishburne",
+                },
+            ];
+
+            try {
+                await session.run(
+                    `
+                    CREATE (movie:Movie:${testLabel}) SET movie = $movie
+                    CREATE (actor1:Actor:${testLabel}) SET actor1 = $actors[0]
+                    CREATE (actor2:Actor:${testLabel}) SET actor2 = $actors[1]
+                    CREATE (actor3:Actor:${testLabel}) SET actor3 = $actors[2]
+                    MERGE (actor1)-[:ACTED_IN]->(movie)
+                    MERGE (actor2)-[:ACTED_IN]->(movie)
+                    MERGE (actor3)-[:ACTED_IN]->(movie)
+                `,
+                    {
+                        movie,
+                        actors,
+                    }
+                );
+
+                const Movie = ogm.model("Movie");
+
+                const ogmMovies = await Movie.cypher({
+                    statement: `
+                        MATCH (m:Movie)
+                        WHERE m.id = "${movie.id}"
+                        RETURN m
+                    `,
+                    selectionSet: `
+                        {
+                            id
+                            title
+                            runtime
+                            actors {
+                                id
+                                name
+                            }
+                            actorsConnection {
+                                totalCount
+                                edges {
+                                    node {
+                                        id
+                                        name
+                                        movies {
+                                            id
+                                            title
+                                            runtime
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    `,
+                });
+
+                expect(ogmMovies).toHaveLength(1);
+
+                expect(ogmMovies[0].id).toBe(movie.id);
+                expect(ogmMovies[0].runtime).toBe(movie.runtime);
+
+                expect(ogmMovies[0].actors).toHaveLength(3);
+                expect(ogmMovies[0].actors).toEqual(expect.arrayContaining(actors));
+
+                expect(ogmMovies[0].actorsConnection.edges).toHaveLength(3);
+                expect(ogmMovies[0].actorsConnection.edges).toEqual(
+                    expect.arrayContaining([
+                        { node: { ...actors[0], movies: [movie] } },
+                        { node: { ...actors[1], movies: [movie] } },
+                        { node: { ...actors[2], movies: [movie] } },
+                    ])
+                );
+            } finally {
+                await session.run(`MATCH (node:${testLabel}) DETACH DELETE node`);
                 await session.close();
             }
         });
