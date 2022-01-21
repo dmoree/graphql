@@ -164,16 +164,22 @@ class Model {
         context?: any;
         rootValue?: any;
     }): Promise<T> {
-        const cypherQuery = `_ogm${this.name}Cypher`;
+        const { createHash } = await import("crypto");
+        const hash = createHash("sha1");
+
         const cypherStatement = statement.replace(/[\n\r]/g, " ").replace(/"/g, "'");
 
-        this.neoSchema.mergeSchema({
-            typeDefs: `
-                type Query {
-                    ${cypherQuery}: [${this.name}!]! @cypher(statement: "${cypherStatement}")
-                }
-            `,
-        });
+        const cypherQuery = `_ogm${this.name}Cypher${hash.update(cypherStatement).digest("hex")}`;
+
+        if (!Object.keys(this.neoSchema.schema.getQueryType()?.getFields() ?? {}).includes(cypherQuery)) {
+            this.neoSchema.mergeSchema({
+                typeDefs: `
+                    type Query {
+                        ${cypherQuery}: [${this.name}!]! @cypher(statement: "${cypherStatement}")
+                    }
+                `,
+            });
+        }
 
         const selection = printSelectionSet(selectionSet || this.selectionSet);
 
