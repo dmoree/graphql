@@ -17,12 +17,11 @@
  * limitations under the License.
  */
 
-import { DocumentNode, graphql, parse, print, SelectionSetNode } from "graphql";
-import pluralize from "pluralize";
+import { DocumentNode, graphql, GraphQLField, parse, print, SelectionSetNode } from "graphql";
 import { Neo4jGraphQL } from "@neo4j/graphql";
 import { GraphQLOptionsArg, GraphQLWhereArg, DeleteInfo } from "../types";
 import { upperFirst } from "../utils/upper-first";
-import { lowerFirst } from "../utils/lower-first";
+import { getName, pluralizeName } from "../utils";
 
 export interface ModelConstructor {
     name: string;
@@ -43,16 +42,75 @@ class Model {
     private namePluralized: string;
     private neoSchema: Neo4jGraphQL;
     protected selectionSet: string;
+    private queryFields: GraphQLField<any, any, any>[];
 
     constructor(input: ModelConstructor) {
         this.name = input.name;
-        this.namePluralized = lowerFirst(pluralize(input.name));
+        this.namePluralized = pluralizeName(input.name);
         this.neoSchema = input.neoSchema;
         this.selectionSet = input.selectionSet;
+
+        const generatedQueryFields = this.neoSchema.nodes
+            .map((node) => [pluralizeName(node.name), `${pluralizeName(node.name)}Aggregate`])
+            .flat();
+
+        this.queryFields = Object.values(this.neoSchema.schema.getQueryType()?.getFields() ?? {})
+            // covered by .find .aggregate
+            .filter((field) => !generatedQueryFields.includes(field.name))
+            // only those that return model node
+            .filter((field) => field.astNode && getName(field.astNode.type) === this.name);
     }
 
     public setSelectionSet(selectionSet: string | DocumentNode) {
         this.selectionSet = printSelectionSet(selectionSet);
+    }
+
+    async query<T = any>({
+        field,
+        selectionSet,
+        context = {},
+        rootValue = null,
+        variableValues = {},
+    }: {
+        field: string;
+        selectionSet?: string;
+        context?: any;
+        rootValue?: any;
+        variableValues?: Record<string, any>;
+    }) {
+        const queryField = this.queryFields.find((f) => f.name === field);
+        if (!queryField) {
+            throw new Error(`Cannot query field ${field} on ${this.name} Model`);
+        }
+
+        const queryArgs = queryField.args
+            .filter((arg) => Object.keys(variableValues).includes(arg.name))
+            .reduce((acc, arg) => [...acc, `$${arg.name}: ${arg.type}`], [] as string[]);
+
+        const fieldArgs = Object.keys(variableValues).reduce((acc, key) => [...acc, `${key}: $${key}`], [] as string[]);
+
+        const wrap = (arr: any[]) => (arr.length ? `(${arr})` : "");
+
+        const selection = printSelectionSet(selectionSet || this.selectionSet);
+        const query = `
+            query${wrap(queryArgs)} {
+                ${field}${wrap(fieldArgs)} ${selection}
+            }
+        `;
+
+        const result = await graphql({
+            schema: this.neoSchema.schema,
+            source: query,
+            rootValue,
+            contextValue: context,
+            variableValues,
+        });
+
+        if (result.errors?.length) {
+            throw new Error(result.errors[0].message);
+        }
+
+        return (result.data as any)[field] as T;
     }
 
     async find<T = any[]>({
