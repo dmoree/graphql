@@ -911,4 +911,118 @@ describe("OGM", () => {
             }
         });
     });
+
+    test("query", async () => {
+        const session = driver.session();
+
+        const typeDefs = `
+            type Actor {
+                id: ID!
+                name: String!
+                movies: [Movie!]! @relationship(type: "ACTED_IN", direction: OUT)
+            }
+
+            type Movie {
+                id: ID!
+                runtime: Int!
+                actors: [Actor!]! @relationship(type: "ACTED_IN", direction: IN)
+            }
+
+            type Query {
+                cypherMovie(id: ID): Movie @cypher(statement: "MATCH (movie:Movie {id: $id}) RETURN movie")
+            }
+        `;
+
+        const ogm = new OGM({ typeDefs, driver });
+
+        const movie = {
+            id: generate(),
+            runtime: 233,
+        };
+
+        const actors = [
+            {
+                id: generate(),
+                name: generate(),
+            },
+            {
+                id: generate(),
+                name: generate(),
+            },
+            {
+                id: generate(),
+                name: generate(),
+            },
+        ];
+
+        try {
+            await session.run(
+                `
+                CREATE (movie:Movie) SET movie = $movie
+                CREATE (actor1:Actor) SET actor1 = $actors[0]
+                CREATE (actor2:Actor) SET actor2 = $actors[1]
+                CREATE (actor3:Actor) SET actor3 = $actors[2]
+                MERGE (actor1)-[:ACTED_IN]->(movie)
+                MERGE (actor2)-[:ACTED_IN]->(movie)
+                MERGE (actor3)-[:ACTED_IN]->(movie)
+            `,
+                {
+                    movie,
+                    actors,
+                }
+            );
+
+            const Movie = ogm.model("Movie");
+
+            const cypherMovie = await Movie.query({
+                field: "cypherMovie",
+                variableValues: {
+                    id: movie.id,
+                },
+                selectionSet: `
+                    {
+                        id
+                        runtime
+                        actors {
+                            id
+                            name
+                        }
+                        actorsConnection(first: ${2}, where: {
+                            node: {
+                                id_IN: ["${actors[0].id}", "${actors[1].id}"]
+                            }
+                        }) {
+                            totalCount
+                            edges {
+                                node {
+                                    id
+                                    name
+                                    movies {
+                                        id
+                                        runtime
+                                    }
+                                }
+                            }
+                        }
+                    }
+                `,
+            });
+
+            expect(cypherMovie.id).toBe(movie.id);
+            expect(cypherMovie.runtime).toBe(movie.runtime);
+
+            expect(cypherMovie.actors).toHaveLength(3);
+            expect(cypherMovie.actors).toEqual(expect.arrayContaining(actors));
+
+            expect(cypherMovie.actorsConnection.edges).toHaveLength(2);
+            expect(cypherMovie.actorsConnection.edges).toEqual(
+                expect.arrayContaining([
+                    { node: { ...actors[0], movies: [movie] } },
+                    { node: { ...actors[1], movies: [movie] } },
+                ])
+            );
+        } finally {
+            await session.close();
+        }
+    });
 });
