@@ -70,13 +70,13 @@ class Model {
         selectionSet,
         context = {},
         rootValue = null,
-        variableValues = {},
+        args = {},
     }: {
         field: string;
         selectionSet?: string;
         context?: any;
         rootValue?: any;
-        variableValues?: Record<string, any>;
+        args?: Record<string, any>;
     }) {
         const queryField = this.queryFields.find((f) => f.name === field);
         if (!queryField) {
@@ -84,10 +84,10 @@ class Model {
         }
 
         const queryArgs = queryField.args
-            .filter((arg) => Object.keys(variableValues).includes(arg.name))
+            .filter((arg) => Object.keys(args).includes(arg.name))
             .reduce((acc, arg) => [...acc, `$${arg.name}: ${arg.type}`], [] as string[]);
 
-        const fieldArgs = Object.keys(variableValues).reduce((acc, key) => [...acc, `${key}: $${key}`], [] as string[]);
+        const fieldArgs = Object.keys(args).reduce((acc, key) => [...acc, `${key}: $${key}`], [] as string[]);
 
         const wrap = (arr: any[]) => (arr.length ? `(${arr})` : "");
 
@@ -103,7 +103,7 @@ class Model {
             source: query,
             rootValue,
             contextValue: context,
-            variableValues,
+            variableValues: args,
         });
 
         if (result.errors?.length) {

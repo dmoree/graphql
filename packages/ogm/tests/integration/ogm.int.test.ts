@@ -976,7 +976,7 @@ describe("OGM", () => {
 
             const cypherMovie = await Movie.query({
                 field: "cypherMovie",
-                variableValues: {
+                args: {
                     id: movie.id,
                 },
                 selectionSet: `
