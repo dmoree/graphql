@@ -260,9 +260,9 @@ function translateUpdate({ node, context }: { node: Node; context: Context }): [
                     createStrs.push(`MERGE (${varName})${inStr}${relTypeStr}${outStr}(${nodeName})`);
 
                     if (relationField.properties) {
-                        const relationship = (context.neoSchema.relationships.find(
+                        const relationship = context.neoSchema.relationships.find(
                             (x) => x.properties === relationField.properties
-                        ) as unknown) as Relationship;
+                        ) as unknown as Relationship;
 
                         const setA = createSetRelationshipPropertiesAndParams({
                             properties: create.edge ?? {},
@@ -364,7 +364,7 @@ function translateUpdate({ node, context }: { node: Node; context: Context }): [
         }
 
         if (projection[2]?.interfaceFields?.length) {
-            projection[2].interfaceFields.forEach((interfaceResolveTree) => {
+            projection[2].interfaceFields.forEach((interfaceResolveTree, i) => {
                 const relationshipField = node.relationFields.find(
                     (x) => x.fieldName === interfaceResolveTree.name
                 ) as RelationField;
@@ -374,6 +374,7 @@ function translateUpdate({ node, context }: { node: Node; context: Context }): [
                     context,
                     node,
                     nodeVariable: varName,
+                    prevVariables: projection[2]?.interfaceFields?.slice(0, i).map((f) => f.alias),
                 });
                 interfaceStrs.push(interfaceProjection.cypher);
                 cypherParams = { ...cypherParams, ...interfaceProjection.params };

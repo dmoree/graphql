@@ -34,6 +34,7 @@ function createInterfaceProjectionAndParams({
     node,
     nodeVariable,
     parameterPrefix,
+    prevVariables = [],
 }: {
     resolveTree: ResolveTree;
     field: RelationField;
@@ -41,6 +42,7 @@ function createInterfaceProjectionAndParams({
     node: Node;
     nodeVariable: string;
     parameterPrefix?: string;
+    prevVariables?: string[];
 }): { cypher: string; params: Record<string, any> } {
     let globalParams = {};
     let params: { args?: any } = {};
@@ -188,7 +190,7 @@ function createInterfaceProjectionAndParams({
         }
 
         if (recurse[2]?.interfaceFields?.length) {
-            recurse[2].interfaceFields.forEach((interfaceResolveTree) => {
+            recurse[2].interfaceFields.forEach((interfaceResolveTree, i) => {
                 const relationshipField = refNode.relationFields.find(
                     (x) => x.fieldName === interfaceResolveTree.name
                 ) as RelationField;
@@ -198,13 +200,14 @@ function createInterfaceProjectionAndParams({
                     context,
                     node: refNode,
                     nodeVariable: param,
+                    prevVariables: recurse[2]?.interfaceFields?.slice(0, i).map((f) => f.alias),
                 });
                 subquery.push(interfaceProjection.cypher);
                 params = { ...params, ...interfaceProjection.params };
             });
         }
 
-        subquery.push(`RETURN ${recurse[0]} AS ${field.fieldName}`);
+        subquery.push(`RETURN ${recurse[0]} AS ${resolveTree.alias}`);
         globalParams = {
             ...globalParams,
             ...recurse[1],
@@ -212,7 +215,13 @@ function createInterfaceProjectionAndParams({
 
         return subquery.join("\n");
     });
-    const interfaceProjection = [`WITH ${nodeVariable}`, "CALL {", subqueries.join("\nUNION\n"), "}"];
+
+    const interfaceProjection = [
+        `WITH ${[nodeVariable, ...prevVariables]}`,
+        "CALL {",
+        subqueries.join("\nUNION\n"),
+        "}",
+    ];
     if (Object.keys(whereArgs).length) {
         params.args = { where: whereArgs };
     }

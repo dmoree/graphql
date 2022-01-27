@@ -121,7 +121,7 @@ function translateCreate({ context, node }: { context: Context; node: Node }): [
         }
 
         if (projection[2]?.interfaceFields?.length) {
-            projection[2].interfaceFields.forEach((interfaceResolveTree) => {
+            projection[2].interfaceFields.forEach((interfaceResolveTree, i) => {
                 const relationshipField = node.relationFields.find(
                     (x) => x.fieldName === interfaceResolveTree.name
                 ) as RelationField;
@@ -131,6 +131,7 @@ function translateCreate({ context, node }: { context: Context; node: Node }): [
                     context,
                     node,
                     nodeVariable: "REPLACE_ME",
+                    prevVariables: projection[2]?.interfaceFields?.slice(0, i).map((f) => f.alias),
                 });
                 interfaceStrs.push(interfaceProjection.cypher);
                 if (!interfaceParams) interfaceParams = {};
