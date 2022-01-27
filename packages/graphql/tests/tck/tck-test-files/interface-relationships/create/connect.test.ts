@@ -135,7 +135,7 @@ describe("Interface Relationships - Create connect", () => {
             RETURN { __resolveType: \\"Series\\", episodes: this0_Series.episodes, title: this0_Series.title } AS actedIn
             }
             RETURN
-            this0 { .name, actedIn: collect(actedIn) } AS this0"
+            this0 { .name, actedIn: collect(DISTINCT actedIn) } AS this0"
         `);
 
         expect(formatParams(result.params)).toMatchInlineSnapshot(`

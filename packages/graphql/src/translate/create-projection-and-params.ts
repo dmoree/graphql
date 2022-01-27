@@ -359,7 +359,9 @@ function createProjectionAndParams({
                 }
 
                 res.projection.push(
-                    `${f.alias}: ${!isArray ? "head(" : ""}collect(${f.alias})${offsetLimitStr}${!isArray ? ")" : ""}`
+                    `${f.alias}: ${!isArray ? "head(" : ""}collect(DISTINCT ${f.alias})${offsetLimitStr}${
+                        !isArray ? ")" : ""
+                    }`
                 );
 
                 return res;

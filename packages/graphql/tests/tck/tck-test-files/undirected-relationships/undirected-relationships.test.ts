@@ -178,7 +178,7 @@ WITH this
 MATCH (this)-[:ACTED_IN]-(this_Series:Series)
 RETURN { __resolveType: \\"Series\\", title: this_Series.title } AS actedIn
 }
-RETURN this { actedIn: collect(actedIn) } as this"
+RETURN this { actedIn: collect(DISTINCT actedIn) } as this"
 `);
 
         expect(formatParams(result.params)).toMatchInlineSnapshot(`"{}"`);

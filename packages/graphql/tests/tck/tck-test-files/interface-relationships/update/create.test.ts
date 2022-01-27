@@ -106,7 +106,7 @@ describe("Interface Relationships - Update create", () => {
             MATCH (this)-[:ACTED_IN]->(this_Series:Series)
             RETURN { __resolveType: \\"Series\\", episodes: this_Series.episodes, title: this_Series.title } AS actedIn
             }
-            RETURN this { .name, actedIn: collect(actedIn) } AS this"
+            RETURN this { .name, actedIn: collect(DISTINCT actedIn) } AS this"
         `);
 
         expect(formatParams(result.params)).toMatchInlineSnapshot(`

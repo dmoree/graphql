@@ -168,7 +168,7 @@ describe("Cypher Auth Where", () => {
             WHERE EXISTS((this_Post)<-[:HAS_CONTENT]-(:User)) AND ALL(creator IN [(this_Post)<-[:HAS_CONTENT]-(creator:User) | creator] WHERE creator.id IS NOT NULL AND creator.id = $this_Post_auth_where0_creator_id)
             RETURN { __resolveType: \\"Post\\", id: this_Post.id } AS content
             }
-            RETURN this { .id, content: collect(content) } as this"
+            RETURN this { .id, content: collect(DISTINCT content) } as this"
         `);
 
         expect(formatParams(result.params)).toMatchInlineSnapshot(`

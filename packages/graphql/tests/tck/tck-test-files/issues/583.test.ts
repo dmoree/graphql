@@ -102,7 +102,7 @@ describe("#583", () => {
             MATCH (this)-[:ACTED_IN]->(this_ShortFilm:ShortFilm)
             RETURN { __resolveType: \\"ShortFilm\\", title: this_ShortFilm.title } AS actedIn
             }
-            RETURN this { .name, actedIn: collect(actedIn) } as this"
+            RETURN this { .name, actedIn: collect(DISTINCT actedIn) } as this"
         `);
 
         expect(formatParams(result.params)).toMatchInlineSnapshot(`"{}"`);
