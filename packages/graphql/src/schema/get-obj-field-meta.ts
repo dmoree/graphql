@@ -202,32 +202,6 @@ function getObjFieldMeta({
                     inherited: false,
                 };
 
-                if (fieldUnion) {
-                    const nodes: string[] = [];
-
-                    fieldUnion.types?.forEach((type) => {
-                        nodes.push(type.name.value);
-                    });
-
-                    const unionField: UnionField = {
-                        ...baseField,
-                        nodes,
-                    };
-
-                    relationField.union = unionField;
-                }
-
-                if (fieldInterface) {
-                    const implementations = objects
-                        .filter((n) => n.interfaces?.some((i) => i.name.value === fieldInterface.name.value))
-                        .map((n) => n.name.value);
-
-                    relationField.interface = {
-                        ...baseField,
-                        implementations,
-                    };
-                }
-
                 // TODO: This will be brittle if more than one interface
 
                 let connectionPrefix = obj.name.value;
@@ -274,7 +248,39 @@ function getObjFieldMeta({
                     arguments: [...(field.arguments || [])],
                     description: field.description?.value,
                     relationship: relationField,
+                    baseField,
                 };
+
+                if (fieldUnion) {
+                    const nodes: string[] = [];
+
+                    fieldUnion.types?.forEach((type) => {
+                        nodes.push(type.name.value);
+                    });
+
+                    const unionField: UnionField = {
+                        ...baseField,
+                        nodes,
+                    };
+
+                    relationField.union = unionField;
+                    connectionField.unionField = unionField;
+                }
+
+                if (fieldInterface) {
+                    const implementations = objects
+                        .filter((n) => n.interfaces?.some((i) => i.name.value === fieldInterface.name.value))
+                        .map((n) => n.name.value);
+
+                    relationField.interface = {
+                        ...baseField,
+                        implementations,
+                    };
+                    connectionField.interfaceField = {
+                        ...baseField,
+                        implementations,
+                    };
+                }
 
                 res.relationFields.push(relationField);
                 res.connectionFields.push(connectionField);
@@ -297,6 +303,60 @@ function getObjFieldMeta({
                     ...cypherMeta,
                 };
                 res.cypherFields.push(cypherField);
+
+                // Create a connection field if cypher statement returns an array of nodes
+                if (baseField.typeMeta.array && (fieldObject || fieldUnion || fieldInterface)) {
+                    const connectionTypeName = `${obj.name.value}${upperFirst(`${baseField.fieldName}Connection`)}`;
+                    const relationshipTypeName = `${obj.name.value}${upperFirst(`${baseField.fieldName}Relationship`)}`;
+                    // @ts-ignore
+                    const connectionField: ConnectionField = {
+                        fieldName: `${baseField.fieldName}Connection`,
+                        typeMeta: {
+                            name: connectionTypeName,
+                            required: true,
+                            pretty: `${connectionTypeName}!`,
+                            input: {
+                                where: {
+                                    type: `${connectionTypeName}Where`,
+                                    pretty: `${connectionTypeName}Where`,
+                                },
+                                create: {
+                                    type: "",
+                                    pretty: "",
+                                },
+                                update: {
+                                    type: "",
+                                    pretty: "",
+                                },
+                            },
+                        },
+                        otherDirectives: [],
+                        arguments: [...(field.arguments || [])],
+                        description: field.description?.value,
+                        baseField,
+                        relationshipTypeName,
+                        cypherField,
+                    };
+
+                    if (fieldUnion) {
+                        connectionField.unionField = {
+                            ...baseField,
+                            nodes: fieldUnion.types?.map((type) => type.name.value),
+                        };
+                    }
+
+                    if (fieldInterface) {
+                        const implementations = objects
+                            .filter((n) => n.interfaces?.some((i) => i.name.value === fieldInterface.name.value))
+                            .map((n) => n.name.value);
+
+                        connectionField.interfaceField = {
+                            ...baseField,
+                            implementations,
+                        };
+                    }
+                    res.connectionFields.push(connectionField);
+                }
             } else if (fieldScalar) {
                 if (defaultDirective) {
                     throw new Error("@default directive can only be used on primitive type fields");

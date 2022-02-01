@@ -46,7 +46,7 @@ function createConnectionFields({
         const relationship = schemaComposer.getOrCreateOTC(connectionField.relationshipTypeName, (tc) => {
             tc.addFields({
                 cursor: "String!",
-                node: `${connectionField.relationship.typeMeta.name}!`,
+                node: `${connectionField.baseField.typeMeta.name}!`,
             });
         });
 
@@ -54,7 +54,7 @@ function createConnectionFields({
 
         const connectionWhere = schemaComposer.getOrCreateITC(connectionWhereName);
 
-        if (!connectionField.relationship.union) {
+        if (!connectionField.unionField) {
             connectionWhere.addFields({
                 AND: `[${connectionWhereName}!]`,
                 OR: `[${connectionWhereName}!]`,
@@ -69,7 +69,7 @@ function createConnectionFields({
             });
         });
 
-        if (connectionField.relationship.properties && !connectionField.relationship.union) {
+        if (connectionField.relationship?.properties && !connectionField.unionField) {
             const propertiesInterface = schemaComposer.getIFTC(connectionField.relationship.properties);
             relationship.addInterface(propertiesInterface);
             relationship.addFields(propertiesInterface.getFields());
@@ -85,7 +85,7 @@ function createConnectionFields({
             [`${connectionField.fieldName}_NOT`]: connectionWhere,
         });
 
-        const composeNodeBaseArgs: {
+        let composeNodeArgs: {
             where: any;
             sort?: any;
             first?: any;
@@ -94,9 +94,11 @@ function createConnectionFields({
             where: connectionWhere,
         };
 
-        let composeNodeArgs = addDirectedArgument(composeNodeBaseArgs, connectionField.relationship);
+        if (connectionField.relationship) {
+            composeNodeArgs = addDirectedArgument(composeNodeArgs, connectionField.relationship);
+        }
 
-        if (connectionField.relationship.properties) {
+        if (connectionField.relationship?.properties) {
             const connectionSort = schemaComposer.getOrCreateITC(`${connectionField.typeMeta.name}Sort`);
             connectionSort.addFields({
                 edge: `${connectionField.relationship.properties}Sort`,
@@ -104,15 +106,15 @@ function createConnectionFields({
             composeNodeArgs.sort = connectionSort.NonNull.List;
         }
 
-        if (connectionField.relationship.interface) {
+        if (connectionField.interfaceField) {
             connectionWhere.addFields({
                 OR: connectionWhere.NonNull.List,
                 AND: connectionWhere.NonNull.List,
-                node: `${connectionField.relationship.typeMeta.name}Where`,
-                node_NOT: `${connectionField.relationship.typeMeta.name}Where`,
+                node: `${connectionField.interfaceField.typeMeta.name}Where`,
+                node_NOT: `${connectionField.interfaceField.typeMeta.name}Where`,
             });
 
-            if (connectionField.relationship.properties) {
+            if (connectionField.relationship?.properties) {
                 const propertiesInterface = schemaComposer.getIFTC(connectionField.relationship.properties);
                 relationship.addInterface(propertiesInterface);
                 relationship.addFields(propertiesInterface.getFields());
@@ -122,8 +124,8 @@ function createConnectionFields({
                     edge_NOT: `${connectionField.relationship.properties}Where`,
                 });
             }
-        } else if (connectionField.relationship.union) {
-            const relatedNodes = nodes.filter((n) => connectionField.relationship.union?.nodes?.includes(n.name));
+        } else if (connectionField.unionField) {
+            const relatedNodes = nodes.filter((n) => connectionField.unionField?.nodes?.includes(n.name));
 
             relatedNodes.forEach((n) => {
                 const connectionName = connectionField.typeMeta.name;
@@ -146,7 +148,7 @@ function createConnectionFields({
                     node_NOT: `${n.name}Where`,
                 });
 
-                if (connectionField.relationship.properties) {
+                if (connectionField.relationship?.properties) {
                     const propertiesInterface = schemaComposer.getIFTC(connectionField.relationship.properties);
                     relationship.addInterface(propertiesInterface);
                     relationship.addFields(propertiesInterface.getFields());
@@ -162,17 +164,17 @@ function createConnectionFields({
                 });
             });
         } else {
-            const relatedNode = nodes.find((n) => n.name === connectionField.relationship.typeMeta.name) as Node;
+            const relatedNode = nodes.find((n) => n.name === connectionField.baseField.typeMeta.name) as Node;
 
             connectionWhere.addFields({
-                node: `${connectionField.relationship.typeMeta.name}Where`,
-                node_NOT: `${connectionField.relationship.typeMeta.name}Where`,
+                node: `${connectionField.baseField.typeMeta.name}Where`,
+                node_NOT: `${connectionField.baseField.typeMeta.name}Where`,
             });
 
             if (relatedNode.sortableFields.length) {
                 const connectionSort = schemaComposer.getOrCreateITC(`${connectionField.typeMeta.name}Sort`);
                 connectionSort.addFields({
-                    node: `${connectionField.relationship.typeMeta.name}Sort`,
+                    node: `${connectionField.baseField.typeMeta.name}Sort`,
                 });
                 if (!composeNodeArgs.sort) {
                     composeNodeArgs.sort = connectionSort.NonNull.List;
@@ -190,7 +192,7 @@ function createConnectionFields({
             };
         }
 
-        if (!connectionField.relationship.writeonly) {
+        if (!connectionField.baseField.writeonly) {
             composeNode.addFields({
                 [connectionField.fieldName]: {
                     type: connection.NonNull,
@@ -207,14 +209,14 @@ function createConnectionFields({
             });
         }
 
-        const relFields = connectionField.relationship.properties
+        const relFields = connectionField.relationship?.properties
             ? relationshipPropertyFields.get(connectionField.relationship.properties)
             : ({} as ObjectFields | undefined);
 
         const r = new Relationship({
             name: connectionField.relationshipTypeName,
-            type: connectionField.relationship.type,
-            properties: connectionField.relationship.properties,
+            type: connectionField.relationship?.type ?? "RELATIONSHIP_TYPE",
+            properties: connectionField.relationship?.properties ?? "RELATIONSHIP_PROPERTIES",
             ...(relFields
                 ? {
                       temporalFields: relFields.temporalFields,

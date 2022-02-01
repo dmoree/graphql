@@ -139,8 +139,12 @@ export interface RelationField extends BaseField {
 }
 
 export interface ConnectionField extends BaseField {
-    relationship: RelationField;
+    baseField: BaseField;
+    unionField?: UnionField;
+    interfaceField?: InterfaceField;
     relationshipTypeName: string;
+    cypherField?: CypherField;
+    relationship: RelationField;
 }
 
 /**
