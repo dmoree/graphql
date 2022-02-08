@@ -33,7 +33,7 @@ describe("Cypher ignore directive", () => {
             type User {
                 firstName: String!
                 lastName: String!
-                fullName: String! @ignore(dependsOn: ["firstName", "lastName"])
+                fullName: String! @ignore(dependsOn: "{ firstName lastName }")
             }
         `;
 
