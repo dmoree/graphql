@@ -35,13 +35,15 @@ describe("@ignore directive", () => {
         await driver.close();
     });
 
+    describe("Invalid selection sets", () => {});
+
     describe("Scalar fields", () => {
         const typeDefs = `
             type User {
                 id: ID!
                 firstName: String!
                 lastName: String!
-                fullName: String @ignore(dependsOn: ["firstName", "lastName"])
+                fullName: String @ignore(dependsOn: "{ firstName lastName }")
             }
         `;
 
@@ -76,7 +78,7 @@ describe("@ignore directive", () => {
             await session.close();
         });
 
-        test("removes a field from all but its object type, and resolves with a custom resolver", async () => {
+        test("resolves field with custom resolver with required fields in selection set", async () => {
             const source = `
                 query Users($userId: ID!) {
                     users(where: { id: $userId }) {
@@ -165,7 +167,7 @@ describe("@ignore directive", () => {
                 id: ID!
                 firstName: String! @cypher(statement: "RETURN '${user.firstName}'")
                 lastName: String! @cypher(statement: "RETURN '${user.lastName}'")
-                fullName: String @ignore(dependsOn: ["firstName", "lastName"])
+                fullName: String @ignore(dependsOn: "{firstName lastName}")
             }
         `;
 
@@ -267,6 +269,402 @@ describe("@ignore directive", () => {
                 id: user.id,
                 f: user.firstName,
                 fullName: fullName(user),
+            });
+        });
+    });
+
+    describe("Relationship fields", () => {
+        const typeDefs = `
+            type User {
+                id: ID!
+                firstName: String!
+                lastName: String!
+                friends: [User!]! @relationship(type: "FRIENDS_WITH", direction: OUT)
+                friendIds: [ID!]! @ignore(dependsOn: "{ friends { id friends { id } } }")
+            }
+        `;
+
+        const friendIds = ({ friends }) => friends.map((friend) => friend.id);
+
+        const resolvers = {
+            User: { friendIds },
+        };
+
+        const { schema } = new Neo4jGraphQL({ typeDefs, resolvers });
+
+        const users = Array(3)
+            .fill(null)
+            .map(() => ({
+                id: generate(),
+                firstName: generate({ charset: "alphabetic", readable: true }),
+                lastName: generate({ charset: "alphabetic", readable: true }),
+            }));
+        beforeAll(async () => {
+            const session = driver.session();
+            await session.run(
+                `
+                CREATE (user1:User:${testLabel}) SET user1 = $users[0]
+                CREATE (user2:User:${testLabel}) SET user2 = $users[1]
+                CREATE (user3:User:${testLabel}) SET user3 = $users[2]
+
+                CREATE (user1)<-[:FRIENDS_WITH {since: datetime()}]-(user2)-[:FRIENDS_WITH {since: datetime() - duration("P1Y")}]->(user3)
+                CREATE (user1)-[:FRIENDS_WITH]->(user3)
+            `,
+                { users }
+            );
+            await session.close();
+        });
+
+        afterAll(async () => {
+            const session = driver.session();
+            await session.run(`MATCH (n:${testLabel}) DETACH DELETE n`);
+            await session.close();
+        });
+
+        test("resolves field with custom resolver with required fields in selection set", async () => {
+            const source = `
+                query Users($userId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friends {
+                            id
+                            friends {
+                                id
+                            }
+                        }
+                        friendIds
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+            expect((gqlResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                friends: expect.arrayContaining([
+                    { id: users[0].id, friends: [{ id: users[2].id }] },
+                    { id: users[2].id, friends: [] },
+                ]),
+                friendIds: expect.arrayContaining([users[0].id, users[2].id]),
+            });
+        });
+
+        test("throw error if field with custom resolver with required fields in selection set having differing arguments", async () => {
+            const source = `
+                query Users($userId: ID!, $friendId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friends(where: { id: $friendId }) {
+                            id
+                            friends {
+                                id
+                            }
+                        }
+                        friendIds
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id, friendId: users[0].id },
+            });
+
+            expect(gqlResult.errors).toBeTruthy();
+        });
+
+        test("throw error if field with custom resolver with required fields in selection set having differing arguments further down", async () => {
+            const source = `
+                query Users($userId: ID!, $friendId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friends {
+                            id
+                            friends(where: { id: $friendId }) {
+                                id
+                            }
+                        }
+                        friendIds
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id, friendId: users[0].id },
+            });
+
+            expect(gqlResult.errors).toBeTruthy();
+        });
+
+        test("resolve if field with custom resolver with required fields in selection set having differing arguments further down is aliased", async () => {
+            const source = `
+                query Users($userId: ID!, $friendId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friends {
+                            id
+                            aliased: friends(where: { id: $friendId }) {
+                                id
+                            }
+                        }
+                        friendIds
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id, friendId: users[0].id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+
+            expect((gqlResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                friends: expect.arrayContaining([
+                    { id: users[0].id, aliased: [] },
+                    { id: users[2].id, aliased: [] },
+                ]),
+                friendIds: expect.arrayContaining([users[0].id, users[2].id]),
+            });
+        });
+
+        test("resolves field with custom resolver with required fields not in selection set", async () => {
+            const source = `
+                query Users($userId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friendIds
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+            expect((gqlResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                friendIds: expect.arrayContaining([users[0].id, users[2].id]),
+            });
+        });
+    });
+
+    describe("Connection fields", () => {
+        const users = Array(3)
+            .fill(null)
+            .map(() => ({
+                id: generate(),
+                firstName: generate({ charset: "alphabetic", readable: true }),
+                lastName: generate({ charset: "alphabetic", readable: true }),
+            }));
+        const typeDefs = `
+            type User {
+                id: ID!
+                firstName: String!
+                lastName: String!
+                friends: [User!]! @relationship(type: "FRIENDS_WITH", direction: OUT)
+                friendIdsFromConnection: [ID!]!
+                    @ignore(
+                        dependsOn: """
+                        {
+                            friendsConnection {
+                                totalCount
+                                edges {
+                                    node {
+                                        id
+                                        friends {
+                                            id
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        """
+                    )
+            }
+        `;
+
+        const friendIdsFromConnection = ({ friendsConnection }) => friendsConnection.edges.map(({ node }) => node.id);
+
+        const resolvers = {
+            User: { friendIdsFromConnection },
+        };
+
+        const { schema } = new Neo4jGraphQL({ typeDefs, resolvers });
+
+        beforeAll(async () => {
+            const session = driver.session();
+            await session.run(
+                `
+                CREATE (user1:User:${testLabel}) SET user1 = $users[0]
+                CREATE (user2:User:${testLabel}) SET user2 = $users[1]
+                CREATE (user3:User:${testLabel}) SET user3 = $users[2]
+
+                CREATE (user1)<-[:FRIENDS_WITH {since: datetime()}]-(user2)-[:FRIENDS_WITH {since: datetime() - duration("P1Y")}]->(user3)
+                CREATE (user1)-[:FRIENDS_WITH]->(user3)
+            `,
+                { users }
+            );
+            await session.close();
+        });
+
+        afterAll(async () => {
+            const session = driver.session();
+            await session.run(`MATCH (n:${testLabel}) DETACH DELETE n`);
+            await session.close();
+        });
+
+        test("resolves field with custom resolver with required fields in selection set", async () => {
+            const source = `
+                query Users($userId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friendsConnection {
+                            totalCount
+                            edges {
+                                node {
+                                    id
+                                    friends {
+                                        id
+                                    }
+                                }
+                            }
+                        }
+                        friendIdsFromConnection
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id, friendId: users[0].id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+            expect((gqlResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                friendsConnection: {
+                    totalCount: 2,
+                    edges: expect.arrayContaining([
+                        { node: { id: users[0].id, friends: [{ id: users[2].id }] } },
+                        { node: { id: users[2].id, friends: [] } },
+                    ]),
+                },
+                friendIdsFromConnection: expect.arrayContaining([users[0].id, users[2].id]),
+            });
+        });
+
+        test("throw error if field with custom resolver with required fields in selection set having differing arguments", async () => {
+            const source = `
+                query Users($userId: ID!, $friendId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friendsConnection {
+                            totalCount
+                            edges {
+                                node {
+                                    id
+                                    friends(where: {id: $friendId}) {
+                                        id
+                                    }
+                                }
+                            }
+                        }
+                        friendIdsFromConnection
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id, friendId: users[0].id },
+            });
+
+            expect(gqlResult.errors).toBeTruthy();
+        });
+
+        test("resolve if field with custom resolver with required fields in selection set having differing arguments is aliased", async () => {
+            const source = `
+                query Users($userId: ID!, $friendId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        aliased: friendsConnection(where: { node: { id: $friendId } }) {
+                            totalCount
+                            edges {
+                                node {
+                                    id
+                                    friends {
+                                        id
+                                    }
+                                }
+                            }
+                        }
+                        friendIdsFromConnection
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id, friendId: users[0].id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+            expect((gqlResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                aliased: {
+                    totalCount: 1,
+                    edges: expect.arrayContaining([{ node: { id: users[0].id, friends: [{ id: users[2].id }] } }]),
+                },
+                friendIdsFromConnection: expect.arrayContaining([users[0].id, users[2].id]),
+            });
+        });
+
+        test("resolves field with custom resolver with required fields not in selection set", async () => {
+            const source = `
+                query Users($userId: ID!) {
+                    users(where: { id: $userId }) {
+                        id
+                        friendIdsFromConnection
+                    }
+                }
+            `;
+
+            const gqlResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: { userId: users[1].id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+            expect((gqlResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                friendIdsFromConnection: expect.arrayContaining([users[0].id, users[2].id]),
             });
         });
     });
