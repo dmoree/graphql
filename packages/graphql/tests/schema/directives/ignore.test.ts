@@ -189,4 +189,60 @@ describe("@ignore directive", () => {
             }"
         `);
     });
+
+    test("throws error if selected field not in field set", () => {
+        expect(
+            () =>
+                new Neo4jGraphQL({
+                    typeDefs: gql`
+                        interface UserInterface {
+                            ignored: String @ignore
+                        }
+
+                        type User implements UserInterface {
+                            id: ID!
+                            username: String!
+                            password: String!
+                            nickname: String! @ignore(dependsOn: "{ not in selection set }")
+                            ignored: String
+                        }
+                    `,
+                })
+        ).toThrow();
+        expect(
+            () =>
+                new Neo4jGraphQL({
+                    typeDefs: gql`
+                        type Actor {
+                            name: String
+                        }
+
+                        type Movie {
+                            id: ID
+                            actors: [Actor!]! @relationship(type: "ACTED_IN", direction: IN)
+                            customField: String!
+                                @ignore(
+                                    dependsOn: """
+                                    {
+                                      id
+                                      actors {
+                                        name
+                                      }
+                                      actorsConnection {
+                                        totalCount
+                                        # edge instead of edges
+                                        edge {
+                                          node {
+                                            name
+                                          }
+                                        }
+                                      }
+                                    }
+                                    """
+                                )
+                        }
+                    `,
+                })
+        ).toThrow();
+    });
 });
