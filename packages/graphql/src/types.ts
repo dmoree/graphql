@@ -174,9 +174,11 @@ export interface UnionField extends BaseField {
     nodes?: string[];
 }
 
-export interface IgnoredField extends BaseField {
-    requiredFields: string[];
+export interface IgnoreMeta {
+    selection?: string;
 }
+
+export interface IgnoredField extends BaseField, IgnoreMeta {}
 
 export interface InterfaceField extends BaseField {
     implementations?: string[];

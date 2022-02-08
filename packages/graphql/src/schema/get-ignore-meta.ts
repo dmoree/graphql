@@ -17,12 +17,8 @@
  * limitations under the License.
  */
 
-import { FieldDefinitionNode, Kind, StringValueNode } from "graphql";
-import { removeDuplicates } from "../utils/utils";
-
-type IgnoreMeta = {
-    requiredFields: string[];
-};
+import { FieldDefinitionNode, Kind } from "graphql";
+import { IgnoreMeta } from "../types";
 
 export const ERROR_MESSAGE = "Required fields of @ignore must be a list of strings";
 
@@ -38,25 +34,16 @@ function getIgnoreMeta(field: FieldDefinitionNode, interfaceField?: FieldDefinit
 
     if (!directiveDependsOn) {
         return {
-            requiredFields: [],
+            selection: undefined,
         };
     }
 
-    if (
-        directiveDependsOn?.value.kind !== Kind.LIST ||
-        directiveDependsOn?.value.values.some((value) => value.kind !== Kind.STRING)
-    ) {
+    if (directiveDependsOn?.value.kind !== Kind.STRING) {
         throw new Error(ERROR_MESSAGE);
     }
 
-    // `@ignore(dependsOn: [String!])`
-    // Create a set from array of argument `require`
-    const requiredFields = removeDuplicates(
-        (directiveDependsOn.value.values.map((v) => (v as StringValueNode).value) as string[]) ?? []
-    );
-
     return {
-        requiredFields,
+        selection: directiveDependsOn.value.value,
     };
 }
 

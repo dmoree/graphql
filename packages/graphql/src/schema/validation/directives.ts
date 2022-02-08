@@ -127,8 +127,8 @@ export const ignoreDirective = new GraphQLDirective({
     locations: [DirectiveLocation.FIELD_DEFINITION],
     args: {
         dependsOn: {
-            description: "Fields that the custom resolver will depend on",
-            type: new GraphQLList(new GraphQLNonNull(GraphQLString)),
+            description: "Selection set that the custom resolver will depend on",
+            type: GraphQLString,
         },
     },
 });
