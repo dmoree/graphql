@@ -17,7 +17,8 @@
  * limitations under the License.
  */
 
-import { UnionTypeDefinitionNode } from "graphql/language/ast";
+import { UnionTypeDefinitionNode } from "graphql";
+import { mergeDeep, parseSelectionSet } from "@graphql-tools/utils";
 import { ResolveTree } from "graphql-parse-resolve-info";
 import { Node } from "../classes";
 import createWhereAndParams from "./create-where-and-params";
@@ -32,7 +33,12 @@ import { createOffsetLimitStr } from "../schema/pagination";
 import mapToDbProperty from "../utils/map-to-db-property";
 import { createFieldAggregation } from "./field-aggregations/create-field-aggregation";
 import { getRelationshipDirection } from "./cypher-builder/get-relationship-direction";
-import { generateMissingOrAliasedFields, filterFieldsInSelection } from "./utils/resolveTree";
+import {
+    generateMissingOrAliasedFields,
+    filterFieldsInSelection,
+    parseNodeSelectionSet,
+    checkArgs,
+} from "./utils/resolveTree";
 import { removeDuplicates } from "../utils/utils";
 
 interface Res {
@@ -601,13 +607,13 @@ function createProjectionAndParams({
             resolveTree.fieldsByTypeName[node.name]
         );
 
-    const fields = {
-        ...selectedFields,
-        ...generateMissingOrAliasedSortFields({ selection: selectedFields, resolveTree }),
-        ...generateMissingOrAliasedRequiredFields({ selection: selectedFields, node }),
-    };
+    const fields = mergeDeep<Record<string, ResolveTree>[]>([
+        selectedFields,
+        generateMissingOrAliasedSortFields({ selection: selectedFields, resolveTree }),
+        generateMissingOrAliasedRequiredFields({ selection: selectedFields, node, context }),
+    ]);
 
-    const { projection, params, meta } = Object.values(fields).reduce(reducer, {
+    const { projection, params, meta } = Object.values(fields as Record<string, ResolveTree>).reduce(reducer, {
         projection: resolveType ? [`__resolveType: "${node.name}"`] : [],
         params: {},
         meta: {},
@@ -636,16 +642,23 @@ const generateMissingOrAliasedSortFields = ({
 // Generated any missing fields required for custom resolvers
 const generateMissingOrAliasedRequiredFields = ({
     node,
+    context,
     selection,
 }: {
     node: Node;
+    context: Context;
     selection: Record<string, ResolveTree>;
 }): Record<string, ResolveTree> => {
-    const requiredFields = removeDuplicates(
-        filterFieldsInSelection({ fields: node.ignoredFields, selection })
-            .map((f) => f.requiredFields)
-            .flat()
-    );
-
-    return generateMissingOrAliasedFields({ fieldNames: requiredFields, selection });
+    return filterFieldsInSelection({ fields: node.ignoredFields, selection }).reduce((acc, ignoredField) => {
+        if (ignoredField.selection) {
+            const requiredSelectionSet = parseNodeSelectionSet(
+                node,
+                parseSelectionSet(ignoredField.selection),
+                context
+            );
+            checkArgs(selection, requiredSelectionSet);
+            return mergeDeep([acc, requiredSelectionSet]);
+        }
+        return acc;
+    }, {});
 };
