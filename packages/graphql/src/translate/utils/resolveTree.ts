@@ -17,8 +17,22 @@
  * limitations under the License.
  */
 
-import { ResolveTree } from "graphql-parse-resolve-info";
-import { BaseField } from "../../types";
+import {
+    SelectionSetNode,
+    GraphQLObjectType,
+    SelectionNode,
+    GraphQLSchema,
+    GraphQLCompositeType,
+    Kind,
+    GraphQLUnionType,
+    getNamedType,
+    GraphQLNamedType,
+    isCompositeType,
+} from "graphql";
+import { FieldsByTypeName, ResolveTree } from "graphql-parse-resolve-info";
+import { getArgumentValues } from "@graphql-tools/utils";
+import { Node } from "../../classes";
+import { BaseField, Context } from "../../types";
 import { removeDuplicates } from "../../utils/utils";
 
 /** Finds a resolve tree of selection based on field name */
@@ -88,4 +102,113 @@ export function generateMissingOrAliasedFields({
         }
         return acc;
     }, {});
+}
+
+export function checkArgs(selection: Record<string, ResolveTree>, merged: Record<string, ResolveTree>) {
+    const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+    const compareArgs = (a: any, b: any) => {
+        if (a === b) return true;
+        if (!isObject(a) || !isObject(b)) return false;
+        const aKeys = Object.keys(a);
+        const bKeys = Object.keys(b);
+        return (
+            aKeys.length === bKeys.length && aKeys.every((key) => bKeys.includes(key) && compareArgs(a[key], b[key]))
+        );
+    };
+    Object.keys(merged)
+        .filter((key) => Object.keys(selection).includes(key))
+        .forEach((key) => {
+            if (!compareArgs(merged[key].args, selection[key].args)) {
+                throw new Error(`Argument mismatch. Either remove or alias field: \`${key}\``);
+            }
+            Object.keys(merged[key].fieldsByTypeName)
+                .filter((k) => Object.keys(selection[key].fieldsByTypeName).includes(k))
+                .forEach((k) => checkArgs(selection[key].fieldsByTypeName[k], merged[key].fieldsByTypeName[k]));
+        });
+}
+
+interface ParseOptions {
+    keepRoot?: boolean;
+    deep?: boolean;
+}
+
+export function parseNodeSelectionSet(node: Node, selectionSet: SelectionSetNode, context: Context) {
+    const parentType = context.neoSchema.schema.getType(node.name) as GraphQLObjectType;
+    const tree = fieldTreeFromAST({
+        asts: selectionSet.selections,
+        schema: context.neoSchema.schema,
+        parentType,
+        options: { deep: true },
+    });
+    return tree[node.name];
+}
+
+export function fieldTreeFromAST<T extends SelectionNode>({
+    asts,
+    schema,
+    parentType,
+    fieldsByTypeName = {},
+    options = {},
+}: {
+    asts: ReadonlyArray<T> | T;
+    schema: GraphQLSchema;
+    parentType: GraphQLCompositeType;
+    fieldsByTypeName?: FieldsByTypeName;
+    options?: ParseOptions;
+}): FieldsByTypeName {
+    const selectionNodes: ReadonlyArray<T> = Array.isArray(asts) ? asts : [asts];
+    if (!fieldsByTypeName[parentType.name]) {
+        fieldsByTypeName[parentType.name] = {};
+    }
+    return selectionNodes.reduce((tree, selectionNode: SelectionNode) => {
+        if (selectionNode.kind === Kind.FIELD) {
+            if (parentType instanceof GraphQLUnionType) {
+                return tree;
+            }
+            const name = selectionNode.name.value;
+            const alias = selectionNode.alias?.value ?? name;
+            const field = parentType.getFields()[name];
+            if (!field) {
+                return tree;
+            }
+            const fieldType = getNamedType(field.type) as GraphQLNamedType | undefined;
+            if (!fieldType) {
+                return tree;
+            }
+            const args = getArgumentValues(field, selectionNode);
+            if (!tree[parentType.name][alias]) {
+                const newTreeRoot: ResolveTree = {
+                    name,
+                    alias,
+                    args,
+                    fieldsByTypeName: isCompositeType(fieldType) ? { [fieldType.name]: {} } : {},
+                };
+                tree[parentType.name][alias] = newTreeRoot;
+            }
+            if (selectionNode.selectionSet && options.deep && isCompositeType(fieldType)) {
+                fieldTreeFromAST({
+                    asts: selectionNode.selectionSet.selections,
+                    schema,
+                    parentType: fieldType,
+                    fieldsByTypeName: tree[parentType.name][alias].fieldsByTypeName,
+                    options,
+                });
+            }
+        } else if (selectionNode.kind === Kind.INLINE_FRAGMENT && options.deep) {
+            let fragmentType: GraphQLNamedType | null | undefined = parentType;
+            if (selectionNode.typeCondition) {
+                fragmentType = schema.getType(selectionNode.typeCondition.name.value);
+            }
+            if (fragmentType && isCompositeType(fragmentType)) {
+                fieldTreeFromAST({
+                    asts: selectionNode.selectionSet.selections,
+                    schema,
+                    parentType: fragmentType,
+                    fieldsByTypeName: tree,
+                    options,
+                });
+            }
+        }
+        return tree;
+    }, fieldsByTypeName);
 }
