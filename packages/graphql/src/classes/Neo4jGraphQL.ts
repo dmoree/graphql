@@ -18,7 +18,7 @@
  */
 
 import { Driver } from "neo4j-driver";
-import { DocumentNode, GraphQLSchema, parse, printSchema } from "graphql";
+import { DocumentNode, GraphQLSchema, parse, printSchema, validate } from "graphql";
 import { IExecutableSchemaDefinition, makeExecutableSchema } from "@graphql-tools/schema";
 import { composeResolvers } from "@graphql-tools/resolvers-composition";
 import { forEachField } from "@graphql-tools/utils";
@@ -97,6 +97,24 @@ class Neo4jGraphQL {
                 field.resolve = defaultFieldResolver;
             }
         });
+
+        nodes
+            .filter((node) => node.ignoredFields.some((ignoredField) => ignoredField.selection))
+            .forEach((node) => {
+                node.ignoredFields
+                    .filter((ignoredField) => ignoredField.selection)
+                    .forEach((ignoredField) => {
+                        const fragmentName = `${node.name}_${ignoredField.fieldName}`;
+                        const errors = validate(
+                            schema,
+                            parse(`fragment ${fragmentName} on ${node.name} ${ignoredField.selection}`)
+                        ).filter((error) => error.message !== `Fragment "${fragmentName}" is never used.`);
+
+                        if (errors.length) {
+                            throw new Error(errors[0].message);
+                        }
+                    });
+            });
 
         this.schema = schema;
 
