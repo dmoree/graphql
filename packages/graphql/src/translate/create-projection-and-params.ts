@@ -654,7 +654,8 @@ const generateMissingOrAliasedRequiredFields = ({
             const requiredSelectionSet = parseNodeSelectionSet(
                 node,
                 parseSelectionSet(ignoredField.selection),
-                context
+                context,
+                selection[ignoredField.fieldName].args
             );
             checkArgs(selection, requiredSelectionSet);
             return mergeDeep([acc, requiredSelectionSet]);

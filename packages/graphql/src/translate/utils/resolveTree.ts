@@ -132,13 +132,19 @@ interface ParseOptions {
     deep?: boolean;
 }
 
-export function parseNodeSelectionSet(node: Node, selectionSet: SelectionSetNode, context: Context) {
+export function parseNodeSelectionSet(
+    node: Node,
+    selectionSet: SelectionSetNode,
+    context: Context,
+    variableValues?: Record<string, any>
+) {
     const parentType = context.neoSchema.schema.getType(node.name) as GraphQLObjectType;
     const tree = fieldTreeFromAST({
         asts: selectionSet.selections,
         schema: context.neoSchema.schema,
         parentType,
         options: { deep: true },
+        variableValues,
     });
     return tree[node.name];
 }
@@ -149,12 +155,14 @@ export function fieldTreeFromAST<T extends SelectionNode>({
     parentType,
     fieldsByTypeName = {},
     options = {},
+    variableValues = {},
 }: {
     asts: ReadonlyArray<T> | T;
     schema: GraphQLSchema;
     parentType: GraphQLCompositeType;
     fieldsByTypeName?: FieldsByTypeName;
     options?: ParseOptions;
+    variableValues?: Record<string, any>;
 }): FieldsByTypeName {
     const selectionNodes: ReadonlyArray<T> = Array.isArray(asts) ? asts : [asts];
     if (!fieldsByTypeName[parentType.name]) {
@@ -175,7 +183,7 @@ export function fieldTreeFromAST<T extends SelectionNode>({
             if (!fieldType) {
                 return tree;
             }
-            const args = getArgumentValues(field, selectionNode);
+            const args = getArgumentValues(field, selectionNode, variableValues);
             if (!tree[parentType.name][alias]) {
                 const newTreeRoot: ResolveTree = {
                     name,
@@ -192,6 +200,7 @@ export function fieldTreeFromAST<T extends SelectionNode>({
                     parentType: fieldType,
                     fieldsByTypeName: tree[parentType.name][alias].fieldsByTypeName,
                     options,
+                    variableValues,
                 });
             }
         } else if (selectionNode.kind === Kind.INLINE_FRAGMENT && options.deep) {
@@ -206,6 +215,7 @@ export function fieldTreeFromAST<T extends SelectionNode>({
                     parentType: fragmentType,
                     fieldsByTypeName: tree,
                     options,
+                    variableValues,
                 });
             }
         }

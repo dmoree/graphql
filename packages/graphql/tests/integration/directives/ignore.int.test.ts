@@ -17,6 +17,7 @@
  * limitations under the License.
  */
 
+import { gql } from "apollo-server";
 import { Driver } from "neo4j-driver";
 import { graphql } from "graphql";
 import { generate } from "randomstring";
@@ -475,12 +476,16 @@ describe("@ignore directive", () => {
                 firstName: generate({ charset: "alphabetic", readable: true }),
                 lastName: generate({ charset: "alphabetic", readable: true }),
             }));
-        const typeDefs = `
+        const typeDefs = gql`
+            interface FriendsProperties {
+                since: DateTime!
+            }
+
             type User {
                 id: ID!
                 firstName: String!
                 lastName: String!
-                friends: [User!]! @relationship(type: "FRIENDS_WITH", direction: OUT)
+                friends: [User!]! @relationship(type: "FRIENDS_WITH", direction: OUT, properties: "FriendsProperties")
                 friendIdsFromConnection: [ID!]!
                     @ignore(
                         dependsOn: """
@@ -499,13 +504,31 @@ describe("@ignore directive", () => {
                         }
                         """
                     )
+                newestFriendIds(since: DateTime!): [ID!]!
+                    @ignore(
+                        dependsOn: """
+                        {
+                            friendsConnection(where: { edge: { since_GT: $since } }) {
+                                totalCount
+                                edges {
+                                    node {
+                                        id
+                                    }
+                                }
+                            }
+                        }
+                        """
+                    )
             }
         `;
 
-        const friendIdsFromConnection = ({ friendsConnection }) => friendsConnection.edges.map(({ node }) => node.id);
+        const idsFromConnection = ({ friendsConnection: { edges } }) => edges.map((edge) => edge.node.id);
 
         const resolvers = {
-            User: { friendIdsFromConnection },
+            User: {
+                friendIdsFromConnection: idsFromConnection,
+                newestFriendIds: idsFromConnection,
+            },
         };
 
         const { schema } = new Neo4jGraphQL({ typeDefs, resolvers });
@@ -518,7 +541,7 @@ describe("@ignore directive", () => {
                 CREATE (user2:User:${testLabel}) SET user2 = $users[1]
                 CREATE (user3:User:${testLabel}) SET user3 = $users[2]
 
-                CREATE (user1)<-[:FRIENDS_WITH {since: datetime()}]-(user2)-[:FRIENDS_WITH {since: datetime() - duration("P1Y")}]->(user3)
+                CREATE (user1)<-[:FRIENDS_WITH {since: datetime() - duration("P1W")}]-(user2)-[:FRIENDS_WITH {since: datetime() - duration("P6M")}]->(user3)
                 CREATE (user1)-[:FRIENDS_WITH]->(user3)
             `,
                 { users }
@@ -665,6 +688,54 @@ describe("@ignore directive", () => {
             expect((gqlResult.data as any).users[0]).toEqual({
                 id: users[1].id,
                 friendIdsFromConnection: expect.arrayContaining([users[0].id, users[2].id]),
+            });
+        });
+
+        test("allow for variables in custom resolver", async () => {
+            const aboutThreeMonthsAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30 * 3).toISOString();
+            const aboutOneYearAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30 * 12).toISOString();
+
+            const source = `
+                query Users($userId: ID!, $since: DateTime!) {
+                    users(where: { id: $userId }) {
+                        id
+                        newestFriendIds(since: $since)
+                    }
+                }
+            `;
+
+            const threeMonthsResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: {
+                    userId: users[1].id,
+                    // About three months ago
+                    since: aboutThreeMonthsAgo,
+                },
+            });
+
+            expect(threeMonthsResult.errors).toBeFalsy();
+            expect((threeMonthsResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                newestFriendIds: expect.arrayContaining([users[0].id]),
+            });
+
+            const oneYearResult = await graphql({
+                schema,
+                source,
+                contextValue: { driver },
+                variableValues: {
+                    userId: users[1].id,
+                    // About three months ago
+                    since: aboutOneYearAgo,
+                },
+            });
+
+            expect(oneYearResult.errors).toBeFalsy();
+            expect((oneYearResult.data as any).users[0]).toEqual({
+                id: users[1].id,
+                newestFriendIds: expect.arrayContaining([users[0].id, users[2].id]),
             });
         });
     });
