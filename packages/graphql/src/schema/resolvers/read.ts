@@ -24,11 +24,16 @@ import { Node } from "../../classes";
 import { Context } from "../../types";
 import getNeo4jResolveTree from "../../utils/get-neo4j-resolve-tree";
 
-export default function findResolver({ node }: { node: Node }) {
+export default function findResolver(object: {
+    node?: Node;
+    union?: { name: string; nodes: Node[] };
+    interface?: { name: string; nodes: Node[] };
+}) {
+    const objectName = (object.node?.name ?? object.union?.name ?? object.interface?.name) as string;
     async function resolve(_root: any, args: any, _context: unknown, info: GraphQLResolveInfo) {
         const context = _context as Context;
         context.resolveTree = getNeo4jResolveTree(info, { args });
-        const [cypher, params] = translateRead({ context, node });
+        const [cypher, params] = translateRead({ context, object });
 
         const executeResult = await execute({
             cypher,
@@ -41,12 +46,19 @@ export default function findResolver({ node }: { node: Node }) {
     }
 
     return {
-        type: `[${node.name}!]!`,
+        type: `[${objectName}!]!`,
         resolve,
-        args: {
-            where: `${node.name}Where`,
-            options: `${node.name}Options`,
-            ...(node.fulltextDirective ? { fulltext: `${node.name}Fulltext` } : {}),
-        },
+        ...((object.union || object.node) && {
+            args: {
+                where: `${objectName}Where`,
+                options: `${object.union ? "Query" : objectName}Options`,
+                ...(object.union?.nodes.some((n) => n.fulltextDirective)
+                    ? {
+                          fulltext: `${object.union.name}Fulltext`,
+                      }
+                    : {}),
+                ...(object.node?.fulltextDirective ? { fulltext: `${object.node.name}Fulltext` } : {}),
+            },
+        }),
     };
 }

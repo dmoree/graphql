@@ -78,6 +78,7 @@ import getUniqueFields from "./get-unique-fields";
 import getWhereFields from "./get-where-fields";
 import { isString } from "../utils/utils";
 import { upperFirst } from "../utils/upper-first";
+import { lowerFirst } from "../utils/lower-first";
 import { parseQueryOptionsDirective } from "./parse/parse-query-options-directive";
 import { QueryOptionsDirective } from "../classes/QueryOptionsDirective";
 
@@ -721,19 +722,6 @@ function makeAugmentedSchema(
         composer.createInputTC(point.cartesianPointDistance);
     }
 
-    unions.forEach((union) => {
-        if (union.types && union.types.length) {
-            const fields = union.types.reduce((f, type) => {
-                return { ...f, [type.name.value]: `${type.name.value}Where` };
-            }, {});
-
-            composer.createInputTC({
-                name: `${union.name.value}Where`,
-                fields,
-            });
-        }
-    });
-
     nodes.forEach((node) => {
         const nodeFields = objectFieldsToComposeFields([
             ...node.primitiveFields,
@@ -955,6 +943,60 @@ function makeAugmentedSchema(
         }
     });
 
+    document.definitions
+        .filter(
+            (x): x is InterfaceTypeDefinitionNode =>
+                x.kind === "InterfaceTypeDefinition" &&
+                nodes.some((node) => node.interfaces.some((i) => i.name.value === x.name.value))
+        )
+        .forEach((i) => {
+            const interfaceName = i.name.value;
+            const iface = {
+                name: interfaceName,
+                nodes: nodes.filter((node) => node.interfaces.some((ni) => ni.name.value === interfaceName)),
+            };
+
+            composer.Query.addFields({
+                [lowerFirst(pluralize(interfaceName))]: findResolver({ interface: iface }),
+            });
+        });
+
+    unions.forEach((u) => {
+        const unionName = u.name.value;
+        const union = {
+            name: unionName,
+            nodes: nodes.filter((n) => u.types?.some((t) => t.name.value === n.name)),
+        };
+        if (u.types && u.types.length) {
+            const fields = u.types.reduce((f, type) => {
+                return { ...f, [type.name.value]: `${type.name.value}Where` };
+            }, {});
+
+            composer.createInputTC({
+                name: `${unionName}Where`,
+                fields,
+            });
+        }
+        if (union.nodes.some((n) => n.fulltextDirective)) {
+            const fields = union.nodes.reduce(
+                (res, n) => ({
+                    ...res,
+                    ...(n.fulltextDirective ? { [n.name]: `${n.name}Fulltext` } : {}),
+                }),
+                {}
+            );
+
+            composer.createInputTC({
+                name: `${unionName}Fulltext`,
+                fields,
+            });
+        }
+
+        composer.Query.addFields({
+            [lowerFirst(pluralize(unionName))]: findResolver({ union }),
+        });
+    });
+
     ["Mutation", "Query"].forEach((type) => {
         const objectComposer = composer[type] as ObjectTypeComposer;
         const cypherType = customResolvers[`customCypher${type}`] as ObjectTypeDefinitionNode;
@@ -1062,6 +1104,18 @@ function makeAugmentedSchema(
             generatedResolvers[union.name.value] = { __resolveType: (root) => root.__resolveType };
         }
     });
+
+    document.definitions
+        .filter(
+            (x): x is InterfaceTypeDefinitionNode =>
+                x.kind === "InterfaceTypeDefinition" &&
+                nodes.some((node) => node.interfaces.some((i) => i.name.value === x.name.value))
+        )
+        .forEach((i) => {
+            if (!generatedResolvers[i.name.value]) {
+                generatedResolvers[i.name.value] = { __resolveType: (root) => root.__resolveType };
+            }
+        });
 
     interfaceRelationships.forEach((i) => {
         if (!generatedResolvers[i.name.value]) {

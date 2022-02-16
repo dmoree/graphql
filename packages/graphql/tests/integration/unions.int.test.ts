@@ -17,6 +17,7 @@
  * limitations under the License.
  */
 
+import { gql } from "graphql-tag";
 import { Driver } from "neo4j-driver";
 import { graphql } from "graphql";
 import { generate } from "randomstring";
@@ -101,6 +102,164 @@ describe("unions", () => {
             const genreSearch = movies.search.find((x: Record<string, string>) => x.__typename === "Genre");
             expect(genreSearch.name).toEqual(genreName);
         } finally {
+            await session.close();
+        }
+    });
+
+    test("should read and return unions as root query", async () => {
+        const session = driver.session();
+        const testLabel = generate({ charset: "alphabetic" });
+
+        const typeDefs = `
+            union Search = Movie | Genre
+
+            type Genre {
+                id: ID!
+                name: String
+            }
+
+            type Movie {
+                id: ID!
+                title: String
+            }
+        `;
+
+        const neoSchema = new Neo4jGraphQL({
+            typeDefs,
+            resolvers: {},
+        });
+
+        const movie = {
+            id: generate(),
+            title: generate({ charset: "alphabetic", readable: true }),
+        };
+
+        const genre = {
+            id: generate(),
+            name: generate({ charset: "alphabetic", readable: true }),
+        };
+
+        const query = gql`
+            query ($movieId: ID!, $genreId: ID!) {
+                searches(where: { Movie: { id: $movieId }, Genre: { id: $genreId } }) {
+                    __typename
+                    ... on Movie {
+                        id
+                        title
+                    }
+                    ... on Genre {
+                        id
+                        name
+                    }
+                }
+            }
+        `;
+
+        try {
+            await session.run(
+                `
+                CREATE (movie:Movie:${testLabel}) SET movie = $movie
+                CREATE (genre:Genre:${testLabel}) SET genre = $genre
+            `,
+                { movie, genre }
+            );
+            const gqlResult = await graphql({
+                schema: await neoSchema.getSchema(),
+                source: query.loc!.source,
+                contextValue: { driver, driverConfig: { bookmarks: session.lastBookmark() } },
+                variableValues: { movieId: movie.id, genreId: genre.id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+
+            const searches = (gqlResult.data as any).searches;
+
+            expect(searches).toContainEqual({ __typename: "Movie", ...movie });
+            expect(searches).toContainEqual({ __typename: "Genre", ...genre });
+        } finally {
+            await session.run(`MATCH (n:${testLabel}) DETACH DELETE n`);
+            await session.close();
+        }
+    });
+
+    test("should read and return unions as root query with fulltext search", async () => {
+        const session = driver.session();
+        const testLabel = generate({ charset: "alphabetic" });
+
+        const typeDefs = `
+            union Search = Movie | Genre
+
+            type Genre {
+                id: ID!
+                name: String
+            }
+
+            type Movie @fulltext(indexes: [{ name: "MovieTitleIndex", fields: ["title"] }]) {
+                id: ID!
+                title: String
+            }
+        `;
+
+        const neoSchema = new Neo4jGraphQL({
+            typeDefs,
+            resolvers: {},
+            driver,
+        });
+        await neoSchema.getSchema();
+        await neoSchema.assertIndexesAndConstraints({ options: { create: true } });
+
+        const movie = {
+            id: generate(),
+            title: generate({ charset: "alphabetic", readable: true }),
+        };
+
+        const genre = {
+            id: generate(),
+            name: generate({ charset: "alphabetic", readable: true }),
+        };
+
+        const query = gql`
+            query ($phrase: String!, $movieId: ID!, $genreId: ID!) {
+                searches(
+                    where: { Movie: { id: $movieId }, Genre: { id: $genreId } }
+                    fulltext: { Movie: { MovieTitleIndex: { phrase: $phrase } } }
+                ) {
+                    __typename
+                    ... on Movie {
+                        id
+                        title
+                    }
+                    ... on Genre {
+                        id
+                        name
+                    }
+                }
+            }
+        `;
+
+        try {
+            await session.run(
+                `
+                CREATE (movie:Movie:${testLabel}) SET movie = $movie
+                CREATE (genre:Genre:${testLabel}) SET genre = $genre
+            `,
+                { movie, genre }
+            );
+            const gqlResult = await graphql({
+                schema: await neoSchema.getSchema(),
+                source: query.loc!.source,
+                contextValue: { driver, driverConfig: { bookmarks: session.lastBookmark() } },
+                variableValues: { phrase: movie.title, movieId: movie.id, genreId: genre.id },
+            });
+
+            expect(gqlResult.errors).toBeFalsy();
+
+            const searches = (gqlResult.data as any).searches;
+
+            expect(searches).toContainEqual({ __typename: "Movie", ...movie });
+            expect(searches).toContainEqual({ __typename: "Genre", ...genre });
+        } finally {
+            await session.run(`MATCH (n:${testLabel}) DETACH DELETE n`);
             await session.close();
         }
     });

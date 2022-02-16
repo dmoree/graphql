@@ -17,23 +17,33 @@
  * limitations under the License.
  */
 
+import { mergeDeep } from "@graphql-tools/utils";
 import { Node } from "../classes";
 import createProjectionAndParams from "./create-projection-and-params";
-import { GraphQLOptionsArg, GraphQLSortArg, Context, ConnectionField, RelationField } from "../types";
+import { GraphQLOptionsArg, Context, ConnectionField, RelationField, GraphQLWhereArg, GraphQLSortArg } from "../types";
 import createAuthAndParams from "./create-auth-and-params";
 import { AUTH_FORBIDDEN_ERROR } from "../constants";
 import createConnectionAndParams from "./connection/create-connection-and-params";
 import createInterfaceProjectionAndParams from "./create-interface-projection-and-params";
-import translateTopLevelMatch from "./translate-top-level-match";
+import createTopLevelMatchWhereAndParams from "./create-top-level-match-where-and-params";
+import createElementWhereAndParams from "./where/create-element-where-and-params";
 
-function translateRead({ node, context }: { context: Context; node: Node }): [string, any] {
+type FulltextArg = { phrase: string; score_EQUAL?: number };
+type GraphQLFulltextArg = FulltextArg | Record<string, FulltextArg>;
+
+function translateRead({
+    object,
+    context,
+}: {
+    context: Context;
+    object: {
+        node?: Node;
+        union?: { name: string; nodes: Node[] };
+        interface?: { name: string; nodes: Node[] };
+    };
+}): [string, any] {
     const { resolveTree } = context;
     const varName = "this";
-
-    let matchAndWhereStr = "";
-    let authStr = "";
-    let projAuth = "";
-    let projStr = "";
 
     const optionsInput = (resolveTree.args.options || {}) as GraphQLOptionsArg;
     let limitStr = "";
@@ -44,74 +54,142 @@ function translateRead({ node, context }: { context: Context; node: Node }): [st
     const connectionStrs: string[] = [];
     const interfaceStrs: string[] = [];
 
-    if (node.queryOptions) {
-        optionsInput.limit = node.queryOptions.getLimit(optionsInput.limit);
-    }
+    const whereInput = (resolveTree.args.where ?? {}) as GraphQLWhereArg;
+    const fulltextInput = (resolveTree.args.fulltext ?? {}) as GraphQLFulltextArg;
+    const isAbstractType = Boolean(object.union || object.interface);
 
-    const topLevelMatch = translateTopLevelMatch({ node, context, varName, operation: "READ" });
-    matchAndWhereStr = topLevelMatch[0];
-    cypherParams = { ...cypherParams, ...topLevelMatch[1] };
+    const nodes = [
+        ...(object.union?.nodes ?? []),
+        ...(object.interface?.nodes ?? []),
+        ...(object.node ? [object.node] : []),
+    ];
 
-    const projection = createProjectionAndParams({
-        node,
-        context,
-        resolveTree,
-        varName,
-    });
-    [projStr] = projection;
-    cypherParams = { ...cypherParams, ...projection[1] };
-    if (projection[2]?.authValidateStrs?.length) {
-        projAuth = `CALL apoc.util.validate(NOT(${projection[2].authValidateStrs.join(
-            " AND "
-        )}), "${AUTH_FORBIDDEN_ERROR}", [0])`;
-    }
-
-    if (projection[2]?.connectionFields?.length) {
-        projection[2].connectionFields.forEach((connectionResolveTree) => {
-            const connectionField = node.connectionFields.find(
-                (x) => x.fieldName === connectionResolveTree.name
-            ) as ConnectionField;
-            const connection = createConnectionAndParams({
-                resolveTree: connectionResolveTree,
-                field: connectionField,
-                context,
-                nodeVariable: varName,
-            });
-            connectionStrs.push(connection[0]);
-            cypherParams = { ...cypherParams, ...connection[1] };
-        });
-    }
-
-    if (projection[2]?.interfaceFields?.length) {
-        projection[2].interfaceFields.forEach((interfaceResolveTree) => {
-            const relationshipField = node.relationFields.find(
-                (x) => x.fieldName === interfaceResolveTree.name
-            ) as RelationField;
-            const interfaceProjection = createInterfaceProjectionAndParams({
-                resolveTree: interfaceResolveTree,
-                field: relationshipField,
-                context,
+    const nodeSubquery = nodes
+        .map((node) => {
+            const queryLimit = node.queryOptions?.getLimit(optionsInput.limit);
+            if (queryLimit) {
+                if (!isAbstractType) {
+                    optionsInput.limit = queryLimit;
+                } else {
+                    cypherParams = mergeDeep([cypherParams, { [`${varName}_${node.name}_limit`]: queryLimit }]);
+                }
+            }
+            const [match, matchWhere, matchParams] = createTopLevelMatchWhereAndParams({
                 node,
-                nodeVariable: varName,
+                context,
+                varName,
+                fulltextInput: isAbstractType ? fulltextInput[node.name] ?? {} : fulltextInput,
             });
-            interfaceStrs.push(interfaceProjection.cypher);
-            cypherParams = { ...cypherParams, ...interfaceProjection.params };
-        });
-    }
 
-    const allowAndParams = createAuthAndParams({
-        operations: "READ",
-        entity: node,
-        context,
-        allow: {
-            parentNode: node,
-            varName,
-        },
-    });
-    if (allowAndParams[0]) {
-        cypherParams = { ...cypherParams, ...allowAndParams[1] };
-        authStr = `CALL apoc.util.validate(NOT(${allowAndParams[0]}), "${AUTH_FORBIDDEN_ERROR}", [0])`;
-    }
+            const [authAllow, authAllowParams] = createAuthAndParams({
+                operations: "READ",
+                entity: node,
+                context,
+                allow: {
+                    parentNode: node,
+                    varName,
+                },
+            });
+
+            const [nodeWhere, nodeWhereParams] = createElementWhereAndParams({
+                whereInput: transformWhere({ isAbstractType, whereInput, nodeName: node.name }),
+                varName,
+                element: node,
+                context,
+                // recursing: true,
+                parameterPrefix: isAbstractType ? `${varName}.${node.name}` : varName,
+            });
+
+            const [authWhere, authWhereParams] = createAuthAndParams({
+                operations: "READ",
+                entity: node,
+                context,
+                where: { varName, node },
+            });
+
+            const [projection, projectionParams, projectionMeta] = createProjectionAndParams({
+                resolveTree,
+                node,
+                context,
+                varName,
+                resolveType: isAbstractType,
+            });
+
+            if (projectionMeta?.connectionFields?.length) {
+                projectionMeta.connectionFields.forEach((connectionResolveTree) => {
+                    const connectionField = node.connectionFields.find(
+                        (x) => x.fieldName === connectionResolveTree.name
+                    ) as ConnectionField;
+                    const connection = createConnectionAndParams({
+                        resolveTree: connectionResolveTree,
+                        field: connectionField,
+                        context,
+                        nodeVariable: varName,
+                    });
+                    connectionStrs.push(connection[0]);
+                    cypherParams = { ...cypherParams, ...connection[1] };
+                });
+            }
+
+            if (projectionMeta?.interfaceFields?.length) {
+                projectionMeta.interfaceFields.forEach((interfaceResolveTree) => {
+                    const relationshipField = node.relationFields.find(
+                        (x) => x.fieldName === interfaceResolveTree.name
+                    ) as RelationField;
+                    const interfaceProjection = createInterfaceProjectionAndParams({
+                        resolveTree: interfaceResolveTree,
+                        field: relationshipField,
+                        context,
+                        node,
+                        nodeVariable: varName,
+                    });
+                    interfaceStrs.push(interfaceProjection.cypher);
+                    cypherParams = { ...cypherParams, ...interfaceProjection.params };
+                });
+            }
+
+            const where = [
+                ...matchWhere,
+                nodeWhere,
+                authWhere,
+                projectionMeta?.authValidateStrs?.length
+                    ? `apoc.util.validatePredicate(NOT(${projectionMeta.authValidateStrs.join(
+                          " AND "
+                      )}), "${AUTH_FORBIDDEN_ERROR}", [0])`
+                    : "",
+            ]
+                .filter(Boolean)
+                .join(" AND ");
+            cypherParams = mergeDeep([
+                cypherParams,
+                matchParams,
+                authAllowParams,
+                authWhereParams,
+                projectionParams,
+                !isEmptyObject(nodeWhereParams)
+                    ? {
+                          [varName]: transformWhereParams({
+                              isAbstractType,
+                              params: nodeWhereParams,
+                              nodeName: node.name,
+                          }),
+                      }
+                    : {},
+            ]);
+
+            return [
+                match,
+                where ? `WHERE ${where}` : "",
+                authAllow ? `CALL apoc.util.validate(NOT(${authAllow}), "${AUTH_FORBIDDEN_ERROR}", [0])` : "",
+                ...connectionStrs,
+                ...interfaceStrs,
+                `${isAbstractType ? "RETURN" : "WITH"} ${varName} ${projection} AS ${varName}`,
+                isAbstractType && queryLimit ? `LIMIT $${varName}_${node.name}_limit` : "",
+            ]
+                .filter(Boolean)
+                .join("\n");
+        })
+        .join("\nUNION\n");
 
     if (optionsInput) {
         const hasOffset = Boolean(optionsInput.offset) || optionsInput.offset === 0;
@@ -141,18 +219,49 @@ function translateRead({ node, context }: { context: Context; node: Node }): [st
     }
 
     const cypher = [
-        matchAndWhereStr,
-        authStr,
-        ...(projAuth ? [`WITH ${varName}`, projAuth] : []),
-        ...connectionStrs,
-        ...interfaceStrs,
-        `RETURN ${varName} ${projStr} as ${varName}`,
+        isAbstractType ? ["CALL {", nodeSubquery, "}"].join("\n") : nodeSubquery,
+        `RETURN ${varName}`,
         ...(sortStr ? [sortStr] : []),
         offsetStr,
         limitStr,
-    ];
+    ]
+        .filter(Boolean)
+        .join("\n");
 
-    return [cypher.filter(Boolean).join("\n"), cypherParams];
+    return [cypher, cypherParams];
 }
 
 export default translateRead;
+
+const transformWhere = ({
+    isAbstractType,
+    whereInput,
+    nodeName,
+}: {
+    isAbstractType: boolean;
+    whereInput: GraphQLWhereArg;
+    nodeName: string;
+}) => {
+    if (!isAbstractType) {
+        return whereInput;
+    }
+    // TODO: Interface where _on
+    return whereInput[nodeName] ?? {};
+};
+
+const transformWhereParams = ({
+    isAbstractType,
+    params,
+    nodeName,
+}: {
+    isAbstractType: boolean;
+    params: Record<string, any>;
+    nodeName: string;
+}) => {
+    if (!isAbstractType) {
+        return params;
+    }
+    return { [nodeName]: params };
+};
+
+const isEmptyObject = (obj: Record<string, any>) => Object.keys(obj).length === 0;
